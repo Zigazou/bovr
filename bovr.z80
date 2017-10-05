@@ -1,0 +1,171 @@
+#include "crtc.s"
+#include "gatearray.s"
+#include "firmware.s"
+#include "utils.s"
+
+RSX_RELOCATION_ADDRESS: equ 0xa000
+LARGE_SCREEN_BASE_ADDRESS: equ 0x8000
+LARGE_SCREEN_LENGTH: equ 0x8000
+
+    org 0x3000
+
+init:
+    ; Transfer RSX table above the first 16 Kbytes
+    call relocate_rsx_table
+
+    ; Register our RSX commands
+    call install_rsx
+    ret
+
+rsx_table:
+    dw rsx_names
+    jp enable_large_screen
+    jp disable_large_screen
+    jp poke
+    jp draw
+    jp cls
+
+rsx_names:
+    db "LARGE" + RSX_LASTCHAR
+    db "STD" + RSX_LASTCHAR
+    db "POKE" + RSX_LASTCHAR
+    db "DRAW" + RSX_LASTCHAR
+    db "CLS" + RSX_LASTCHAR
+    db RSX_END
+
+; Four bytes used by the kernel for our RSX
+rsx_four_bytes:
+    ds 4, 0x00
+
+rsx_table_end:
+
+; If the RSX tables resides in the first 16 kilobytes, Basic considers the RSX
+; are located in ROM. Because our code must be located in the first 16 kilobytes
+; we must relocate the RSX tables in order to make it work.
+relocate_rsx_table:
+    ; The first word of the RSX table contains a pointer to the RSX names. This
+    ; pointer must be recalculated before relocating the RSX table
+    ld hl, rsx_table
+    ld de, RSX_RELOCATION_ADDRESS + rsx_names - rsx_table
+    ld (hl), de
+
+    ; Copy the RSX table at its new address
+    MEMCPY rsx_table, RSX_RELOCATION_ADDRESS, rsx_table_end - rsx_table
+    ret
+
+install_rsx:
+    ld bc, RSX_RELOCATION_ADDRESS
+    ld hl, RSX_RELOCATION_ADDRESS + rsx_four_bytes - rsx_table
+    call KL_LOG_EXT
+    ret
+
+enable_large_screen:
+    ; Play with memory banks
+    ; We need to be alone!
+    di
+    
+    ; Copy RAM2 to RAM6 - RAM config 6 (0-6-2-3)
+    GA_SET_RAM BANK0, RAM0623
+    MEMCPY 0x8000, 0x4000, 0x4000
+    
+    ; Copy RAM0 to RAM4 - RAM config 4 (0-4-2-3)
+    GA_SET_RAM BANK0, RAM0423
+    MEMCPY 0x0000, 0x4000, 0x4000
+
+    ; We can now use RAM config 2 (4-5-6-7)
+    GA_SET_RAM BANK0, RAM4567
+
+    ei
+
+    ; Define our own screen mode
+    CRTC_SET_HORIZONTAL_DISPLAYED 50
+    CRTC_SET_HORIZONTAL_SYNC_POSITION 51
+    CRTC_SET_VERTICAL_DISPLAYED 34
+    CRTC_SET_VERTICAL_SYNC_POSITION 35
+    CRTC_SET_DISPLAY_START VIDEO_BUFFER_32K, VIDEO_PAGE_8000, 0x000
+
+    ret
+
+disable_large_screen:
+    di
+    
+    ; Copy RAM2 to RAM6 - RAM config 6 (0-6-2-3)
+    GA_SET_RAM BANK0, RAM0623
+    MEMCPY 0x4000, 0x8000, 0x4000
+    
+    ; Copy RAM0 to RAM4 - RAM config 4 (0-4-2-3)
+    GA_SET_RAM BANK0, RAM0423
+    MEMCPY 0x4000, 0x0000, 0x4000
+
+    ; We can now use RAM config 0 (0-1-2-3)
+    GA_SET_RAM BANK0, RAM0123
+
+    ei
+
+    ; Define our own screen mode
+    CRTC_SET_HORIZONTAL_DISPLAYED 40
+    CRTC_SET_HORIZONTAL_SYNC_POSITION 46
+    CRTC_SET_VERTICAL_DISPLAYED 25
+    CRTC_SET_VERTICAL_SYNC_POSITION 30
+    CRTC_SET_DISPLAY_START VIDEO_BUFFER_16K, VIDEO_PAGE_C000, 0x000
+
+    ret
+
+poke:
+    ld bc, LARGE_SCREEN_BASE_ADDRESS
+    ld h, (ix + 3)
+    ld l, (ix + 2)
+    add hl, bc
+    ld a, (ix + 0)
+
+    di
+
+    GA_SET_RAM BANK0, RAM0123
+    ld (hl), a
+    GA_SET_RAM BANK0, RAM4567
+
+    ei
+    
+    ret
+
+draw:
+    ld bc, LARGE_SCREEN_LENGTH
+    ld hl, LARGE_SCREEN_BASE_ADDRESS
+    ld a, 0xff
+
+    di
+    GA_SET_RAM BANK0, RAM0123
+draw_loop:
+    ld (hl), a
+    inc hl
+    dec c
+    jr nz, draw_loop
+    dec b
+    jr nz, draw_loop
+
+    GA_SET_RAM BANK0, RAM4567
+    ei
+
+    ret
+
+cls:
+    ld bc, LARGE_SCREEN_LENGTH
+    ld hl, LARGE_SCREEN_BASE_ADDRESS
+    ld a, 0x00
+    
+    di
+    GA_SET_RAM BANK0, RAM0123
+
+cls_loop:
+    ld (hl), a
+    inc hl
+    dec c
+    jr nz, cls_loop
+    dec b
+    jr nz, cls_loop
+
+    GA_SET_RAM BANK0, RAM4567
+    ei
+
+    ret
+
